@@ -1,132 +1,145 @@
-import os
 import discord
-from discord.ext import tasks
-from dotenv import load_dotenv
-from playwright.async_api import async_playwright
-from datetime import datetime
+from discord.ext import commands, tasks
 import asyncio
+import sqlite3
+from datetime import datetime, timedelta
+import os
+from dotenv import load_dotenv
+
+# Import the scraping and database functions from the previous script
+from job_scraper import scrape_github_jobs, create_database, update_database
 
 load_dotenv()
 
 intents = discord.Intents.default()
 intents.message_content = True
+bot = commands.Bot(command_prefix='!', intents=intents)
 
-client = discord.Client(intents=intents)
+def dict_factory(cursor, row):
+    d = {}
+    for idx, col in enumerate(cursor.description):
+        d[col[0]] = row[idx]
+    return d
 
-async def scrape_apple_refurbished():
-    products = []
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=False)
-        page = await browser.new_page()
-        await page.goto('https://www.apple.com/shop/refurbished/iphone')
-
-        await page.evaluate("""
-            () => {
-                window.scrollBy(0, document.body.scrollHeight);
-            }
-        """)
-        await page.wait_for_load_state('networkidle')
-
-        product_tiles = page.locator('.rf-refurb-producttile')
-        product_count = await product_tiles.count()
-
-        page_div = page.locator('.rc-pagination-total-pages')
-        next_button = page.locator('button[aria-label="Next"]')
-
-
-        if await page_div.count() > 0:
-            total_pages = int(await page_div.inner_text())
-        else:
-            total_pages = 1
-
-        for _ in range(total_pages):
-            await asyncio.sleep(1)
-            i = 0
-            product_tiles = page.locator('.rf-refurb-producttile')
-            product_count = await product_tiles.count()
-            print(product_count)
-            while i < product_count:
-                tile = product_tiles.nth(i)
-                await tile.scroll_into_view_if_needed(timeout=10000)
-                title = tile.locator('.rf-refurb-producttile-title a')
-                price = tile.locator('span.rf-refurb-producttile-currentprice')
-                previous_price = tile.locator('span.rf-refurb-price-previousprice')
-                savings = tile.locator('span.rf-refurb-price-savingsprice')
-                link = await title.get_attribute('href')
-                picture = tile.locator('.rf-refurb-producttile-image')
-
-                if title and price:
-                    product_info = {
-                        'title': await title.inner_text(),
-                        'price': await price.inner_text(),
-                        'previous_price': await previous_price.inner_text() if await previous_price.count() > 0 else 'N/A',
-                        'savings': await savings.inner_text() if await savings.count() > 0 else 'N/A',
-                        'link': 'https://www.apple.com' + link,
-                        'picture': await picture.get_attribute('src')
-                    }
-                    products.append(product_info)
-                i += 1
-            if await next_button.count() > 0 and await next_button.is_enabled():
-                await next_button.click()
-                await page.wait_for_load_state('domcontentloaded')
-
-                await page.evaluate("""
-                    () => {
-                        window.scrollBy(0, document.body.scrollHeight);
-                    }
-                """)
-                await page.wait_for_load_state('networkidle')
-                await asyncio.sleep(1)
-            else:
-                break
-
-        await browser.close()
-    return products
-
-
-async def embedding(product):
-    product_title = product['title']
-    product_price = product['price']
-    product_previous_price = product['previous_price'].replace('Was\n', '')
-    product_savings = product['savings'].replace('Save ', '')
-    product_link = product['link']
-    product_img = product['picture']
-    embed = discord.Embed(title=f"{product_title}",
-                      url=f"{product_link}",
-                      colour=0x00b0f4,
-                      timestamp=datetime.now())
-    embed.add_field(name="Refurbished Price",
-                value=f"{product_price}",
-                inline=True)
-    embed.add_field(name="Original Price",
-                    value=f"{product_previous_price}",
-                    inline=True)
-    embed.add_field(name="You Saved",
-                value=f"{product_savings}",
-                inline=True)
-
-    embed.set_image(url=f"{product_img}")
-
-    return embed
-
-@tasks.loop(hours=1)
-async def scrape_task():
-    channel = client.get_channel(int(os.getenv('CHANNEL_ID')))
-    scraped_data = await scrape_apple_refurbished()
-    for product in scraped_data:
-        embed = await embedding(product)
-        await channel.send(embed=embed)
-    # embed = await embedding(scraped_data[0])
-    # await channel.send(embed=embed)
-
-@client.event
+@bot.event
 async def on_ready():
-    print(f'We have logged in as {client.user}')
-    scrape_task.start()
+    print(f'Logged in as {bot.user.name}')
+    create_database()
+    update_jobs.start()
 
-@client.event
-async def on_message(message):
-    if message.content.startswith('$hello'):
-        await message.channel.send('Hello!')
+@tasks.loop(hours=24)
+async def update_jobs():
+    jobs = await scrape_github_jobs()
+    update_database(jobs)
+    
+    # Get new jobs added in the last 24 hours
+    conn = sqlite3.connect('jobs.db')
+    conn.row_factory = dict_factory
+    c = conn.cursor()
+    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    c.execute("SELECT * FROM jobs WHERE date_posted >= ?", (yesterday,))
+    new_jobs = c.fetchall()
+    conn.close()
+    
+    # if new_jobs:
+    #     channel = bot.get_channel(int(os.getenv('JOB_CHANNEL_ID')))
+    #     await channel.send(f"New job listings ({len(new_jobs)}):")
+    #     for job in new_jobs:
+    #         await channel.send(
+    #             f"Company: {job['company']}\n"
+    #             f"Role: {job['role']}\n"
+    #             f"Location: {job['location']}\n"
+    #             f"Application Link: {job['application_link']}\n"
+    #             f"Date Posted: {job['date_posted']}"
+    #         )
 
-client.run(os.getenv('BOT_TOKEN'))
+@bot.command()
+async def days(ctx, num_days: int):
+    if num_days <= 0:
+        await ctx.send("Please provide a positive number of days.")
+        return
+
+    conn = sqlite3.connect('jobs.db')
+    conn.row_factory = dict_factory
+    c = conn.cursor()
+    
+    date_threshold = (datetime.now() - timedelta(days=num_days)).strftime("%Y-%m-%d")
+    c.execute("SELECT * FROM jobs WHERE date_posted >= ? and application_link IS NOT NULL and application_link != ''", (date_threshold,))
+    recent_jobs = c.fetchall()
+    conn.close()
+
+    if recent_jobs:
+        await ctx.send(f"Jobs posted in the last {num_days} day(s) ({len(recent_jobs)}):")
+        for job in recent_jobs:
+            job_info = \
+                f"Company: {job['company']}\n"\
+                f"Role: {job['role']}\n"\
+                f"Location: {job['location']}\n"\
+                f"Application Link: {job['application_link']}\n"\
+                f"Date Posted: {job['date_posted']}"
+            
+            await ctx.send(job_info)
+    else:
+        await ctx.send(f"No new jobs found in the last {num_days} day(s).")
+
+@bot.command()
+async def jobs(ctx):
+    conn = sqlite3.connect('jobs.db')
+    c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM jobs")
+    job_count = c.fetchone()[0]
+    conn.close()
+    await ctx.send(f"There are currently {job_count} job listings in the database.")
+
+@bot.command()
+async def apply(ctx, job_id: int):
+    conn = sqlite3.connect('jobs.db')
+    c = conn.cursor()
+    c.execute("SELECT * FROM jobs WHERE id = ?", (job_id,))
+    job = c.fetchone()
+    
+    if job:
+        c.execute("INSERT OR IGNORE INTO user_applications (user_id, job_id) VALUES (?, ?)", (ctx.author.id, job_id))
+        conn.commit()
+        await ctx.send(f"Application recorded for job ID {job_id}.")
+    else:
+        await ctx.send(f"Job ID {job_id} not found.")
+    
+    conn.close()
+
+@bot.command()
+async def myapps(ctx):
+    conn = sqlite3.connect('jobs.db')
+    conn.row_factory = dict_factory
+    c = conn.cursor()
+    c.execute("""
+        SELECT jobs.* FROM jobs
+        JOIN user_applications ON jobs.id = user_applications.job_id
+        WHERE user_applications.user_id = ?
+    """, (ctx.author.id,))
+    applications = c.fetchall()
+    conn.close()
+    
+    if applications:
+        await ctx.send("Your job applications:")
+        for job in applications:
+            job_info = \
+                f"Company: {job['company']}\n"\
+                f"Role: {job['role']}\n"\
+                f"Location: {job['location']}\n"\
+                f"Application Link: {job['application_link']}\n"\
+                f"Date Posted: {job['date_posted']}"
+            await ctx.send(job_info)
+    else:
+        await ctx.send("You haven't applied to any jobs yet.")
+
+@bot.command()
+async def numjobs(ctx):
+    conn = sqlite3.connect('jobs.db')
+    c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM jobs")
+    job_count = c.fetchone()[0]
+    conn.close()
+    await ctx.send(f"There are currently {job_count} job listings in the database.")
+
+bot.run(os.getenv('BOT_TOKEN'))
