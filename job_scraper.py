@@ -4,7 +4,7 @@ import re
 import sqlite3
 from datetime import datetime, timedelta
 
-def parse_date_posted(date_str, current_year=2024):
+def parse_date_posted(date_str):
     months = {
         'Jan': 1, 'Feb': 2, 'Mar': 3, 'Apr': 4, 'May': 5, 'Jun': 6,
         'Jul': 7, 'Aug': 8, 'Sep': 9, 'Oct': 10, 'Nov': 11, 'Dec': 12
@@ -13,9 +13,10 @@ def parse_date_posted(date_str, current_year=2024):
     month, day = date_str.split()
     month_num = months[month[:3]]
     day = int(day)
+    current_year = datetime.now().year
     
     # Determine the year
-    now = datetime.now()
+    now = datetime.now() + timedelta(days=1)  # Add 1 day to account for time zone differences
     if month_num > now.month or (month_num == now.month and day > now.day):
         year = current_year - 1
     else:
@@ -99,7 +100,6 @@ def create_database():
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS jobs
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  unique_id TEXT UNIQUE,
                   company TEXT,
                   role TEXT,
                   location TEXT,
@@ -112,56 +112,44 @@ def create_database():
     conn.commit()
     conn.close()
 
-import hashlib
-
-def create_unique_id(job):
-    # Combine relevant fields, including the application link
-    identifier_string = (
-        f"{job['company'].lower().replace(' ', '_')}_"
-        f"{job['role'].lower().replace(' ', '_')}_"
-        f"{job['location'].lower().replace(' ', '_')}_"
-        f"{job['date_posted']}_"
-        f"{job['application_link']}"
-    )
-    
-    # Create a hash of the entire identifier string
-    hash_object = hashlib.md5(identifier_string.encode())
-    short_hash = hash_object.hexdigest()[:16]  # Use first 8 characters of the hash
-    
-    # Return only the short hash
-    return short_hash
-
 def update_database(jobs):
     conn = sqlite3.connect('jobs.db')
     c = conn.cursor()
     
     new_jobs_count = 0
     updated_jobs_count = 0
-    for job in jobs:
-        unique_id = create_unique_id(job)
-        date_posted = parse_date_posted(job['date_posted'])
+
+    # Reverse the jobs list so that the oldest job gets ID 1
+    jobs.reverse()
+
+    for i in range(len(jobs)):
+        job = jobs[i]  # i-1 because list indices start at 0
         
-        # Check if the job already exists
-        c.execute("SELECT id FROM jobs WHERE unique_id = ?", (unique_id,))
+        # Check if the job with this ID already exists
+        c.execute("SELECT * FROM jobs WHERE id = ?", (i,))
         existing_job = c.fetchone()
-        
+
+        date_posted = parse_date_posted(job['date_posted'])
+
         if existing_job:
             # Update existing job
             c.execute('''UPDATE jobs
                          SET company = ?, role = ?, location = ?, application_link = ?, date_posted = ?
-                         WHERE unique_id = ?''',
+                         WHERE id = ?''',
                       (job['company'], job['role'], job['location'],
-                       job['application_link'], date_posted, unique_id))
+                       job['application_link'], date_posted, i))
             updated_jobs_count += 1
+            print(f"Job updated: ID {i} - {job['company']} - {job['role']}")
         else:
             # Insert new job
             c.execute('''INSERT INTO jobs
-                         (unique_id, company, role, location, application_link, date_posted)
+                         (id, company, role, location, application_link, date_posted)
                          VALUES (?, ?, ?, ?, ?, ?)''',
-                      (unique_id, job['company'], job['role'], job['location'],
+                      (i, job['company'], job['role'], job['location'],
                        job['application_link'], date_posted))
             new_jobs_count += 1
-    
+            print(f"New job added: ID {i} - {job['company']} - {job['role']}")
+
     conn.commit()
     conn.close()
     

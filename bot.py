@@ -62,9 +62,10 @@ async def days(ctx, num_days: int):
     conn = sqlite3.connect('jobs.db')
     conn.row_factory = dict_factory
     c = conn.cursor()
-    
+
     date_threshold = (datetime.now() - timedelta(days=num_days)).strftime("%Y-%m-%d")
     c.execute("SELECT * FROM jobs WHERE date_posted >= ? and application_link IS NOT NULL and application_link != ''", (date_threshold,))
+    
     recent_jobs = c.fetchall()
     conn.close()
 
@@ -72,6 +73,7 @@ async def days(ctx, num_days: int):
         await ctx.send(f"Jobs posted in the last {num_days} day(s) ({len(recent_jobs)}):")
         for job in recent_jobs:
             job_info = \
+                f"ID: {job['id']}\n"\
                 f"Company: {job['company']}\n"\
                 f"Role: {job['role']}\n"\
                 f"Location: {job['location']}\n"\
@@ -124,6 +126,7 @@ async def myapps(ctx):
         await ctx.send("Your job applications:")
         for job in applications:
             job_info = \
+                f"ID: {job['id']}\n"\
                 f"Company: {job['company']}\n"\
                 f"Role: {job['role']}\n"\
                 f"Location: {job['location']}\n"\
@@ -132,6 +135,27 @@ async def myapps(ctx):
             await ctx.send(job_info)
     else:
         await ctx.send("You haven't applied to any jobs yet.")
+
+@bot.command()
+async def show(ctx, job_id: int):
+    conn = sqlite3.connect('jobs.db')
+    conn.row_factory = dict_factory
+    c = conn.cursor()
+    c.execute("SELECT * FROM jobs WHERE id = ?", (job_id,))
+    job = c.fetchone()
+    conn.close()
+    
+    if job:
+        job_info = \
+            f"ID: {job['id']}\n"\
+            f"Company: {job['company']}\n"\
+            f"Role: {job['role']}\n"\
+            f"Location: {job['location']}\n"\
+            f"Application Link: {job['application_link']}\n"\
+            f"Date Posted: {job['date_posted']}"
+        await ctx.send(job_info)
+    else:
+        await ctx.send(f"Job ID {job_id} not found.")
 
 @bot.command()
 async def numjobs(ctx):
