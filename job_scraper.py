@@ -132,6 +132,9 @@ def update_database(jobs):
         date_posted = parse_date_posted(job['date_posted'])
 
         if existing_job:
+            if existing_job[1:] == (job['company'], job['role'], job['location'], job['application_link'], date_posted):
+                # No changes, skip this job
+                continue
             # Update existing job
             c.execute('''UPDATE jobs
                          SET company = ?, role = ?, location = ?, application_link = ?, date_posted = ?
