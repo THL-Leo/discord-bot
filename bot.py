@@ -164,14 +164,8 @@ async def myapps(ctx):
     if applications:
         await ctx.send("Your job applications:")
         for job in applications:
-            job_info = \
-                f"ID: {job['id']}\n"\
-                f"Company: {job['company']}\n"\
-                f"Role: {job['role']}\n"\
-                f"Location: {job['location']}\n"\
-                f"Application Link: {job['application_link']}\n"\
-                f"Date Posted: {job['date_posted']}"
-            await ctx.send(job_info)
+            job_info = await embed_job(job, 'Applied')
+            await ctx.send(embed=job_info)
     else:
         await ctx.send("You haven't applied to any jobs yet.")
 
